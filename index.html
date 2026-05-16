@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Runner - Turbo Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+            margin: 0;
+            overflow: hidden;
+            touch-action: manipulation;
+        }
+        canvas {
+            display: block;
+            image-rendering: pixelated;
+        }
+        #ui-overlay {
+            pointer-events: none;
+        }
+        .retro-text {
+            text-shadow: 0 0 15px rgba(34, 211, 238, 0.9);
+        }
+        .countdown-anim {
+            animation: ping-custom 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+        }
+        @keyframes ping-custom {
+            0% { transform: scale(1); opacity: 1; }
+            75%, 100% { transform: scale(2.5); opacity: 0; }
+        }
+        button:focus {
+            outline: none;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen">
+
+    <div id="game-container" class="relative overflow-hidden rounded-xl shadow-2xl border-4 border-slate-700 bg-black">
+        <canvas id="gameCanvas"></canvas>
+        
+        <div id="ui-overlay" class="absolute inset-0 flex flex-col items-center justify-center text-white">
+            <div id="start-screen" class="text-center pointer-events-auto bg-black/70 p-8 rounded-2xl backdrop-blur-sm border border-cyan-500/30">
+                <h1 class="text-6xl font-black mb-4 tracking-tighter text-cyan-400 italic retro-text">NEON RUNNER</h1>
+                <p class="mb-6 text-slate-300 leading-relaxed">
+                    Space: ジャンプ / Shift: ダッシュ攻撃<br>
+                    後半は障害物が増加！コンボで破壊せよ！
+                </p>
+                <button id="start-btn" class="px-10 py-4 bg-cyan-500 hover:bg-cyan-400 text-black font-extrabold rounded-full transition-all hover:scale-105 active:scale-95 shadow-[0_0_30px_rgba(6,182,212,0.6)]">
+                    START RUNNING
+                </button>
+            </div>
+
+            <div id="countdown-screen" class="hidden text-center">
+                <span id="countdown-text" class="text-9xl font-black text-cyan-400 italic countdown-anim drop-shadow-[0_0_20px_rgba(34,211,238,1)]">3</span>
+            </div>
+
+            <div id="game-over-screen" class="hidden text-center pointer-events-auto bg-black/85 p-8 rounded-2xl backdrop-blur-md border border-red-500/50">
+                <h2 class="text-5xl font-black mb-2 text-red-500 italic">CRASHED!</h2>
+                <p id="final-score" class="text-2xl mb-8 text-slate-300 font-mono">Distance: 0m</p>
+                <button id="retry-btn" class="px-10 py-4 bg-white hover:bg-slate-200 text-black font-extrabold rounded-full transition-all hover:scale-105 active:scale-95">
+                    TRY AGAIN
+                </button>
+            </div>
+
+            <div id="hud" class="absolute top-4 left-4 hidden flex flex-col gap-1">
+                <p class="text-2xl font-mono font-bold text-cyan-400 retro-text">DISTANCE: <span id="score-val">0</span>m</p>
+                <div class="flex gap-4">
+                    <p class="text-xs font-mono text-slate-400">SPEED: <span id="speed-val">4.00</span>x</p>
+                    <p class="text-xs font-mono text-yellow-500" id="turbo-status">READY</p>
+                    <p class="text-xs font-mono" id="dash-status">DASH: READY</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // BGM/SE設定
+        const bgm = new Audio('https://raw.githubusercontent.com/Gaagaa0719/ai-game-workshop2/main/BGM.mp3');
+        bgm.loop = true;
+        bgm.volume = 0.5;
+
+        const gameOverSe = new Audio('https://raw.githubusercontent.com/Gaagaa0719/ai-game-workshop2/main/%E3%82%B2%E3%83%BC%E3%83%A0%E3%82%AA%E3%83%BC%E3%83%90%E3%83%BC.mp3');
+        gameOverSe.loop = false;
+        gameOverSe.volume = 0.6;
+
+        // 攻撃音SEの追加
+        const attackSe = new Audio('https://raw.githubusercontent.com/Gaagaa0719/ai-game-workshop2/main/%E6%94%BB%E6%92%83%E9%9F%B3%E5%80%99%E8%A3%9C2.mp3');
+        attackSe.loop = false;
+        attackSe.volume = 0.7;
+
+        let CANVAS_WIDTH = 800;
+        let CANVAS_HEIGHT = 450;
+        const GRAVITY = 0.4; 
+        const JUMP_FORCE = -10; 
+        const AIR_JUMP_FORCE = -9; 
+        const JUMP_FORWARD_BOOST = 15;
+        const DASH_FORCE = 55;
+        const RETURN_SPEED = 0.8;
+        const TARGET_X = 150;
+
+        const BASE_SPEED = 4.0;
+        const MAX_SPEED = 20.0;
+        const WIND_START_SPEED = 6.5; 
+        const WIND_FADE_DURATION = 600; 
+
+        let currentScrollSpeed = BASE_SPEED;
+        let isRunning = false;
+        let isCountingDown = false;
+        let score = 0;
+        let gameTime = 0;
+        let windStartTime = -1;
+        let consecutiveObstaclePlatforms = 0;
+
+        let hitStopTimer = 0; 
+        let flashTimer = 0; 
+        let windParticles = [];
+        let destructionParticles = []; 
+        let shockwaves = []; 
+
+        const startScreen = document.getElementById('start-screen');
+        const countdownScreen = document.getElementById('countdown-screen');
+        const countdownText = document.getElementById('countdown-text');
+        const gameOverScreen = document.getElementById('game-over-screen');
+        const hud = document.getElementById('hud');
+        const startBtn = document.getElementById('start-btn');
+        const retryBtn = document.getElementById('retry-btn');
+        const scoreVal = document.getElementById('score-val');
+        const speedVal = document.getElementById('speed-val');
+        const finalScore = document.getElementById('final-score');
+        const turboStatus = document.getElementById('turbo-status');
+        const dashStatusUI = document.getElementById('dash-status');
+
+        function resizeCanvas() {
+            CANVAS_WIDTH = Math.min(window.innerWidth - 40, 800);
+            CANVAS_HEIGHT = 450;
+            canvas.width = CANVAS_WIDTH;
+            canvas.height = CANVAS_HEIGHT;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        class Player {
+            constructor() {
+                this.width = 30;
+                this.height = 40;
+                this.x = TARGET_X;
+                this.y = 100;
+                this.vy = 0;
+                this.jumpCount = 0;
+                this.color = '#22d3ee';
+                this.onGround = false;
+                this.dashActive = false;
+                this.dashCooldown = 0;
+                this.dashTimer = 0;
+                this.dashLingerTimer = 0; 
+            }
+            jump() {
+                if (this.onGround) {
+                    this.vy = JUMP_FORCE;
+                    this.x += JUMP_FORWARD_BOOST;
+                    this.jumpCount = 1;
+                    this.onGround = false;
+                } else if (this.jumpCount < 2) {
+                    this.vy = AIR_JUMP_FORCE;
+                    this.x += JUMP_FORWARD_BOOST * 1.5; 
+                    this.jumpCount++;
+                }
+            }
+            dash() {
+                if (this.dashCooldown <= 0) {
+                    this.dashActive = true;
+                    this.dashTimer = 10;
+                    this.dashLingerTimer = 6; 
+                    this.dashCooldown = 35; 
+                    this.x += DASH_FORCE;
+                    if (!this.onGround) this.vy = -1.5;
+                }
+            }
+            update() {
+                if (this.dashTimer > 0) {
+                    if (!this.onGround) this.vy *= 0.5;
+                } else {
+                    this.vy += GRAVITY;
+                }
+                this.y += this.vy;
+                if (this.x > TARGET_X) this.x -= RETURN_SPEED;
+                if (this.x < TARGET_X) this.x = TARGET_X;
+                if (this.dashTimer > 0) {
+                    this.dashTimer--;
+                    this.dashActive = true;
+                } else if (this.dashLingerTimer > 0) {
+                    this.dashLingerTimer--;
+                    this.dashActive = true; 
+                } else {
+                    this.dashActive = false;
+                }
+                if (this.dashCooldown > 0) this.dashCooldown--;
+                if (this.y > CANVAS_HEIGHT + 100) return true;
+                if (this.x < -this.width) return true;
+                return false;
+            }
+            draw() {
+                ctx.save();
+                const drawColor = this.dashActive ? '#ffffff' : this.color;
+                ctx.fillStyle = drawColor;
+                ctx.shadowBlur = this.dashActive ? 40 : 15;
+                ctx.shadowColor = drawColor;
+                if (!this.onGround) {
+                    ctx.translate(this.x + this.width/2, this.y + this.height/2);
+                    ctx.rotate(this.dashTimer > 0 ? 0 : this.vy * 0.02);
+                    ctx.translate(-(this.x + this.width/2), -(this.y + this.height/2));
+                }
+                ctx.beginPath();
+                ctx.roundRect(this.x, this.y, this.width, this.height, 8);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = this.dashActive ? '#000' : '#fff';
+                ctx.fillRect(this.x + 18, this.y + 8, 8, 4); 
+                ctx.restore();
+            }
+        }
+
+        class Obstacle {
+            constructor(parentWidth, parentY, type, xPos) {
+                this.width = 25;
+                this.height = type === 'air' ? 25 : 35;
+                this.type = type; 
+                this.destroyed = false;
+                this.offsetX = xPos;
+                if (this.type === 'ground') {
+                    this.offsetY = -this.height;
+                } else {
+                    this.offsetY = -this.height - 70 - Math.random() * 90;
+                }
+            }
+            draw(platformX, platformY) {
+                if (this.destroyed) return;
+                const drawX = platformX + this.offsetX;
+                const drawY = platformY + this.offsetY;
+                ctx.save();
+                ctx.fillStyle = '#f43f5e'; 
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = '#f43f5e';
+                if (this.type === 'ground') {
+                    ctx.beginPath();
+                    ctx.moveTo(drawX, drawY + this.height);
+                    ctx.lineTo(drawX + this.width / 2, drawY);
+                    ctx.lineTo(drawX + this.width, drawY + this.height);
+                    ctx.closePath();
+                    ctx.fill();
+                } else {
+                    ctx.translate(drawX + this.width/2, drawY + this.height/2);
+                    ctx.rotate(gameTime * 0.05);
+                    ctx.fillRect(-this.width/2, -this.height/2, this.width, this.height);
+                }
+                ctx.restore();
+            }
+            checkCollision(player, platformX, platformY) {
+                if (this.destroyed) return false;
+                const ox = platformX + this.offsetX;
+                const oy = platformY + this.offsetY;
+                const paddingX = player.dashActive ? 18 : 5;
+                const paddingY = 5;
+                return (
+                    player.x < ox + this.width + paddingX &&
+                    player.x + player.width > ox - paddingX &&
+                    player.y < oy + this.height + paddingY &&
+                    player.y + player.height > oy - paddingY
+                );
+            }
+            destroy(platformX, platformY) {
+                this.destroyed = true;
+                
+                // 攻撃音再生
+                attackSe.currentTime = 0;
+                attackSe.play().catch(e => console.log("Attack SE failed", e));
+
+                const ox = platformX + this.offsetX + this.width/2;
+                const oy = platformY + this.offsetY + this.height/2;
+                hitStopTimer = 6;
+                flashTimer = 5; 
+                shockwaves.push({ x: ox, y: oy, radius: 10, life: 25 });
+                for(let i=0; i<30; i++) {
+                    destructionParticles.push({
+                        x: ox, y: oy,
+                        vx: (Math.random() - 0.5) * 18,
+                        vy: (Math.random() - 0.8) * 14, 
+                        life: 35 + Math.random() * 35,
+                        color: Math.random() > 0.3 ? '#f43f5e' : '#ffffff',
+                        size: 2 + Math.random() * 5
+                    });
+                }
+            }
+        }
+
+        class Platform {
+            constructor(x, y, width, isInitial = false) {
+                this.x = x; this.y = y; this.width = width;
+                this.height = CANVAS_HEIGHT - y + 300; 
+                this.obstacles = [];
+                if (!isInitial) this.generateObstacles();
+            }
+            generateObstacles() {
+                let maxObstacles = score > 1500 ? 3 : (score > 500 ? 2 : 1);
+                const obstacleCount = Math.floor(Math.random() * maxObstacles) + 1;
+                if (consecutiveObstaclePlatforms >= 3) { consecutiveObstaclePlatforms = 0; return; }
+                if (Math.random() < 0.6) {
+                    consecutiveObstaclePlatforms++;
+                    let lastX = 100;
+                    for(let i=0; i<obstacleCount; i++) {
+                        const type = Math.random() > 0.3 ? 'ground' : 'air';
+                        const availableWidth = this.width - 150 - lastX;
+                        if (availableWidth < 50) break;
+                        const xPos = lastX + Math.random() * (availableWidth / obstacleCount);
+                        this.obstacles.push(new Obstacle(this.width, this.y, type, xPos));
+                        lastX = xPos + 120;
+                    }
+                } else { consecutiveObstaclePlatforms = 0; }
+            }
+            draw() {
+                const grad = ctx.createLinearGradient(this.x, this.y, this.x, this.y + 150);
+                grad.addColorStop(0, '#1e293b'); grad.addColorStop(1, '#020617');
+                ctx.fillStyle = grad; ctx.fillRect(this.x, this.y, this.width, this.height);
+                ctx.fillStyle = '#06b6d4'; ctx.shadowBlur = 15; ctx.shadowColor = '#06b6d4';
+                ctx.fillRect(this.x, this.y, this.width, 4); ctx.shadowBlur = 0;
+                this.obstacles.forEach(obs => obs.draw(this.x, this.y));
+            }
+        }
+
+        function initWindParticles() {
+            windParticles = [];
+            for (let i = 0; i < 20; i++) {
+                windParticles.push({
+                    x: Math.random() * CANVAS_WIDTH,
+                    y: Math.random() * CANVAS_HEIGHT,
+                    len: 150 + Math.random() * 250, 
+                    speed: 12 + Math.random() * 18
+                });
+            }
+        }
+
+        function updateParticles() {
+            if (hitStopTimer > 0) return; 
+            windParticles.forEach(p => {
+                p.x -= p.speed * (currentScrollSpeed / 3.0);
+                if (p.x + p.len < 0) { p.x = CANVAS_WIDTH + 100; p.y = Math.random() * CANVAS_HEIGHT; }
+            });
+            for(let i = destructionParticles.length - 1; i >= 0; i--) {
+                const p = destructionParticles[i];
+                p.x += p.vx; p.y += p.vy; p.vy += 0.45; p.life--;
+                if(p.life <= 0) destructionParticles.splice(i, 1);
+            }
+            for(let i = shockwaves.length - 1; i >= 0; i--) {
+                const s = shockwaves[i];
+                s.radius += 10; s.life--;
+                if(s.life <= 0) shockwaves.splice(i, 1);
+            }
+        }
+
+        function drawEffects() {
+            shockwaves.forEach(s => {
+                ctx.strokeStyle = `rgba(255, 255, 255, ${s.life / 25})`;
+                ctx.lineWidth = 4;
+                ctx.beginPath(); ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2); ctx.stroke();
+            });
+            destructionParticles.forEach(p => {
+                ctx.fillStyle = p.color;
+                ctx.globalAlpha = p.life / 70;
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+            });
+            ctx.globalAlpha = 1.0;
+            if (currentScrollSpeed >= WIND_START_SPEED) {
+                if (windStartTime === -1) windStartTime = gameTime;
+                const elapsedSinceWind = gameTime - windStartTime;
+                const fadeRatio = Math.min(elapsedSinceWind / WIND_FADE_DURATION, 1);
+                ctx.save(); ctx.lineWidth = 2.5; 
+                windParticles.forEach((p) => {
+                    const alpha = (0.15 + (fadeRatio * 0.45)) * fadeRatio; 
+                    ctx.strokeStyle = `rgba(165, 243, 252, ${alpha})`; 
+                    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + p.len, p.y); ctx.stroke();
+                });
+                ctx.restore();
+            } else windStartTime = -1;
+            if (flashTimer > 0) {
+                ctx.fillStyle = `rgba(255, 255, 255, ${flashTimer / 10})`;
+                ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                flashTimer--;
+            }
+        }
+
+        let player, platforms;
+
+        function initGame() {
+            player = new Player(); platforms = []; destructionParticles = []; shockwaves = [];
+            hitStopTimer = 0; flashTimer = 0; score = 0; gameTime = 0; windStartTime = -1;
+            consecutiveObstaclePlatforms = 0; currentScrollSpeed = BASE_SPEED;
+            initWindParticles();
+            platforms.push(new Platform(0, 350, 1000, true));
+            for(let i = 0; i < 5; i++) generatePlatform();
+            bgm.currentTime = 0;
+            gameOverSe.pause(); gameOverSe.currentTime = 0;
+            attackSe.pause(); attackSe.currentTime = 0;
+        }
+
+        function generatePlatform() {
+            const lastPlatform = platforms[platforms.length - 1];
+            const gap = (110 + Math.random() * 180) * (0.8 + (currentScrollSpeed/BASE_SPEED) * 0.2);
+            const width = (score > 1000 ? 600 : 450) + Math.random() * 450; 
+            let y = lastPlatform.y + (Math.random() * 260 - 130); 
+            if (y < 120) y = 120 + Math.random() * 50;
+            if (y > 380) y = 380 - Math.random() * 30;
+            platforms.push(new Platform(lastPlatform.x + lastPlatform.width + gap, y, width));
+        }
+
+        function triggerCountdown() {
+            if (isCountingDown) return;
+            isCountingDown = true;
+            startScreen.classList.add('hidden');
+            gameOverScreen.classList.add('hidden');
+            countdownScreen.classList.remove('hidden');
+            bgm.play().catch(e => console.log("BGM play failed", e));
+            let count = 3; countdownText.textContent = count;
+            const cdLoop = setInterval(() => {
+                count--;
+                if (count > 0) countdownText.textContent = count;
+                else {
+                    clearInterval(cdLoop); countdownScreen.classList.add('hidden');
+                    isCountingDown = false; isRunning = true;
+                    hud.classList.remove('hidden');
+                    requestAnimationFrame(update);
+                }
+            }, 1000);
+            requestAnimationFrame(renderWhilePaused);
+        }
+
+        function renderWhilePaused() {
+            if (isRunning) return; draw();
+            if (isCountingDown) requestAnimationFrame(renderWhilePaused);
+        }
+
+        function update() {
+            if (!isRunning) return;
+            if (hitStopTimer > 0) { hitStopTimer--; draw(); requestAnimationFrame(update); return; }
+            gameTime++;
+            const elapsedSeconds = gameTime / 60;
+            if (elapsedSeconds <= 15) currentScrollSpeed = BASE_SPEED + (elapsedSeconds * (1 / 15));
+            else currentScrollSpeed = 5.0 + ((elapsedSeconds - 15) * (1 / 60)); 
+            if (currentScrollSpeed > MAX_SPEED) currentScrollSpeed = MAX_SPEED;
+            score = Math.floor(gameTime / 10);
+            scoreVal.textContent = score;
+            speedVal.textContent = currentScrollSpeed.toFixed(2);
+            if (currentScrollSpeed >= WIND_START_SPEED) {
+                turboStatus.textContent = "SUPERSONIC"; turboStatus.className = "text-xs font-mono text-orange-400 italic font-bold";
+            } else if (elapsedSeconds > 15) {
+                turboStatus.textContent = "CRUISING"; turboStatus.className = "text-xs font-mono text-cyan-400";
+            } else { turboStatus.textContent = "WARMING UP"; }
+            dashStatusUI.textContent = player.dashCooldown > 0 ? "DASH: RELOADING" : "DASH: READY";
+            dashStatusUI.className = player.dashCooldown > 0 ? "text-xs font-mono text-slate-500" : "text-xs font-mono text-pink-500 font-bold";
+            updateParticles();
+            const prevY = player.y;
+            if (player.update()) { endGame(); return; }
+            player.onGround = false;
+            for (let p of platforms) {
+                p.x -= currentScrollSpeed;
+                p.obstacles.forEach(obs => {
+                    if (obs.checkCollision(player, p.x, p.y)) {
+                        if (player.dashActive) obs.destroy(p.x, p.y);
+                        else endGame();
+                    }
+                });
+                if (isRunning && player.x + player.width > p.x && player.x < p.x + p.width) {
+                    if (player.vy >= 0 && prevY + player.height <= p.y + 10 && player.y + player.height >= p.y) {
+                        player.y = p.y - player.height; player.vy = 0; player.onGround = true; player.jumpCount = 0;
+                    } else if (!player.onGround && player.y + player.height > p.y + 10) { player.x = p.x - player.width; }
+                }
+            }
+            if (platforms.length > 0 && platforms[0].x + platforms[0].width < -500) { platforms.shift(); generatePlatform(); }
+            draw(); requestAnimationFrame(update);
+        }
+
+        function draw() {
+            ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1;
+            const gridOffset = (isRunning ? gameTime * (currentScrollSpeed * 0.5) : 0) % 50;
+            for(let i = -gridOffset; i < CANVAS_WIDTH; i += 50) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, CANVAS_HEIGHT); ctx.stroke(); }
+            ctx.strokeStyle = '#334155'; ctx.beginPath(); ctx.moveTo(0, 420); ctx.lineTo(CANVAS_WIDTH, 420); ctx.stroke();
+            platforms.forEach(p => p.draw());
+            player.draw();
+            if (isRunning) drawEffects();
+        }
+
+        function endGame() { 
+            isRunning = false; 
+            finalScore.textContent = `Distance: ${score}m`; 
+            gameOverScreen.classList.remove('hidden'); 
+            bgm.pause();
+            gameOverSe.play().catch(e => console.log("GameOver SE failed", e));
+        }
+
+        function handleAction(type) {
+            if (isRunning) {
+                if (type === 'jump') player.jump();
+                if (type === 'dash') player.dash();
+            } else if (!isCountingDown) {
+                if (!startScreen.classList.contains('hidden') || !gameOverScreen.classList.contains('hidden')) {
+                    initGame(); triggerCountdown();
+                }
+            }
+        }
+
+        const blockStandardKeys = (e) => {
+            if (e.code === 'Space' || e.code === 'Enter') {
+                e.preventDefault();
+                if (document.activeElement) document.activeElement.blur();
+                return true;
+            }
+            return false;
+        };
+
+        window.addEventListener('keydown', (e) => {
+            if (blockStandardKeys(e)) {
+                if (e.code === 'Space') handleAction('jump');
+            }
+            if (e.shiftKey || e.code === 'ShiftLeft' || e.code === 'ShiftRight') { 
+                e.preventDefault(); 
+                handleAction('dash'); 
+            }
+        }, { passive: false });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); }
+        }, { passive: false });
+
+        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleAction('jump'); });
+
+        [startBtn, retryBtn].forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (document.activeElement) document.activeElement.blur();
+                initGame();
+                triggerCountdown();
+            });
+        });
+
+        initGame(); draw();
+    </script>
+</body>
+</html>
