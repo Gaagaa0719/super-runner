@@ -57,7 +57,7 @@
                 <span id="countdown-text" class="text-9xl font-black text-cyan-400 italic countdown-anim drop-shadow-[0_0_20px_rgba(34,211,238,1)]">3</span>
             </div>
 
-            <div id="game-over-screen" class="hidden text-center pointer-events-auto bg-black/85 p-8 rounded-2xl backdrop-blur-md border border-red-500/50">
+            <div id="game-over-screen" class="hidden opacity-0 text-center pointer-events-auto bg-black/85 p-8 rounded-2xl backdrop-blur-md border border-red-500/50 transition-opacity duration-300">
                 <h2 class="text-5xl font-black mb-2 text-red-500 italic">CRASHED!</h2>
                 <p id="final-score" class="text-2xl mb-8 text-slate-300 font-mono">Distance: 0m</p>
                 <button id="retry-btn" class="px-10 py-4 bg-white hover:bg-slate-200 text-black font-extrabold rounded-full transition-all hover:scale-105 active:scale-95">
@@ -89,7 +89,6 @@
         gameOverSe.loop = false;
         gameOverSe.volume = 0.6;
 
-        // 攻撃音SEの追加
         const attackSe = new Audio('https://raw.githubusercontent.com/Gaagaa0719/ai-game-workshop2/main/%E6%94%BB%E6%92%83%E9%9F%B3%E5%80%99%E8%A3%9C2.mp3');
         attackSe.loop = false;
         attackSe.volume = 0.7;
@@ -122,6 +121,9 @@
         let windParticles = [];
         let destructionParticles = []; 
         let shockwaves = []; 
+        let playerDeathParticles = []; 
+
+        let animationFrameId; // アニメーションフレームを完全に制御・管理するID
 
         const startScreen = document.getElementById('start-screen');
         const countdownScreen = document.getElementById('countdown-screen');
@@ -159,8 +161,10 @@
                 this.dashCooldown = 0;
                 this.dashTimer = 0;
                 this.dashLingerTimer = 0; 
+                this.alive = true; 
             }
             jump() {
+                if (!this.alive) return;
                 if (this.onGround) {
                     this.vy = JUMP_FORCE;
                     this.x += JUMP_FORWARD_BOOST;
@@ -173,6 +177,7 @@
                 }
             }
             dash() {
+                if (!this.alive) return;
                 if (this.dashCooldown <= 0) {
                     this.dashActive = true;
                     this.dashTimer = 10;
@@ -183,6 +188,8 @@
                 }
             }
             update() {
+                if (!this.alive) return false;
+
                 if (this.dashTimer > 0) {
                     if (!this.onGround) this.vy *= 0.5;
                 } else {
@@ -201,11 +208,15 @@
                     this.dashActive = false;
                 }
                 if (this.dashCooldown > 0) this.dashCooldown--;
-                if (this.y > CANVAS_HEIGHT + 100) return true;
-                if (this.x < -this.width) return true;
+
+                if (this.y > CANVAS_HEIGHT + 100 || this.x < -this.width) {
+                    return true;
+                }
                 return false;
             }
             draw() {
+                if (!this.alive) return; 
+
                 ctx.save();
                 const drawColor = this.dashActive ? '#ffffff' : this.color;
                 ctx.fillStyle = drawColor;
@@ -223,6 +234,26 @@
                 ctx.fillStyle = this.dashActive ? '#000' : '#fff';
                 ctx.fillRect(this.x + 18, this.y + 8, 8, 4); 
                 ctx.restore();
+            }
+
+            explode() {
+                this.alive = false;
+                const centerX = this.x + this.width / 2;
+                const centerY = this.y + this.height / 2;
+
+                shockwaves.push({ x: centerX, y: centerY, radius: 15, life: 30 });
+
+                for (let i = 0; i < 40; i++) {
+                    playerDeathParticles.push({
+                        x: centerX,
+                        y: centerY,
+                        vx: (Math.random() - 0.5) * 16,
+                        vy: (Math.random() - 0.7) * 16 - 3, 
+                        life: 40 + Math.random() * 40,
+                        color: Math.random() > 0.3 ? '#22d3ee' : '#ffffff', 
+                        size: 3 + Math.random() * 5
+                    });
+                }
             }
         }
 
@@ -262,7 +293,7 @@
                 ctx.restore();
             }
             checkCollision(player, platformX, platformY) {
-                if (this.destroyed) return false;
+                if (this.destroyed || !player.alive) return false;
                 const ox = platformX + this.offsetX;
                 const oy = platformY + this.offsetY;
                 const paddingX = player.dashActive ? 18 : 5;
@@ -276,8 +307,6 @@
             }
             destroy(platformX, platformY) {
                 this.destroyed = true;
-                
-                // 攻撃音再生
                 attackSe.currentTime = 0;
                 attackSe.play().catch(e => console.log("Attack SE failed", e));
 
@@ -351,11 +380,19 @@
                 p.x -= p.speed * (currentScrollSpeed / 3.0);
                 if (p.x + p.len < 0) { p.x = CANVAS_WIDTH + 100; p.y = Math.random() * CANVAS_HEIGHT; }
             });
+
             for(let i = destructionParticles.length - 1; i >= 0; i--) {
                 const p = destructionParticles[i];
                 p.x += p.vx; p.y += p.vy; p.vy += 0.45; p.life--;
                 if(p.life <= 0) destructionParticles.splice(i, 1);
             }
+
+            for(let i = playerDeathParticles.length - 1; i >= 0; i--) {
+                const p = playerDeathParticles[i];
+                p.x += p.vx; p.y += p.vy; p.vy += 0.4; p.life--;
+                if(p.life <= 0) playerDeathParticles.splice(i, 1);
+            }
+
             for(let i = shockwaves.length - 1; i >= 0; i--) {
                 const s = shockwaves[i];
                 s.radius += 10; s.life--;
@@ -369,12 +406,23 @@
                 ctx.lineWidth = 4;
                 ctx.beginPath(); ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2); ctx.stroke();
             });
+
             destructionParticles.forEach(p => {
                 ctx.fillStyle = p.color;
                 ctx.globalAlpha = p.life / 70;
                 ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
             });
+
+            playerDeathParticles.forEach(p => {
+                ctx.fillStyle = p.color;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = p.color;
+                ctx.globalAlpha = p.life / 80;
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+            });
+            ctx.shadowBlur = 0;
             ctx.globalAlpha = 1.0;
+
             if (currentScrollSpeed >= WIND_START_SPEED) {
                 if (windStartTime === -1) windStartTime = gameTime;
                 const elapsedSinceWind = gameTime - windStartTime;
@@ -387,6 +435,7 @@
                 });
                 ctx.restore();
             } else windStartTime = -1;
+
             if (flashTimer > 0) {
                 ctx.fillStyle = `rgba(255, 255, 255, ${flashTimer / 10})`;
                 ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -397,7 +446,11 @@
         let player, platforms;
 
         function initGame() {
+            // 前のプレイから残っているすべてのアニメーションループを停止
+            cancelAnimationFrame(animationFrameId);
+
             player = new Player(); platforms = []; destructionParticles = []; shockwaves = [];
+            playerDeathParticles = []; 
             hitStopTimer = 0; flashTimer = 0; score = 0; gameTime = 0; windStartTime = -1;
             consecutiveObstaclePlatforms = 0; currentScrollSpeed = BASE_SPEED;
             initWindParticles();
@@ -406,6 +459,10 @@
             bgm.currentTime = 0;
             gameOverSe.pause(); gameOverSe.currentTime = 0;
             attackSe.pause(); attackSe.currentTime = 0;
+
+            gameOverScreen.classList.add('hidden');
+            gameOverScreen.classList.remove('opacity-100');
+            gameOverScreen.classList.add('opacity-0');
         }
 
         function generatePlatform() {
@@ -423,9 +480,15 @@
             isCountingDown = true;
             startScreen.classList.add('hidden');
             gameOverScreen.classList.add('hidden');
+            gameOverScreen.classList.remove('opacity-100');
+            gameOverScreen.classList.add('opacity-0');
             countdownScreen.classList.remove('hidden');
             bgm.play().catch(e => console.log("BGM play failed", e));
             let count = 3; countdownText.textContent = count;
+            
+            // カウントダウン開始時に確実に古いループを破棄
+            cancelAnimationFrame(animationFrameId);
+
             const cdLoop = setInterval(() => {
                 count--;
                 if (count > 0) countdownText.textContent = count;
@@ -433,20 +496,41 @@
                     clearInterval(cdLoop); countdownScreen.classList.add('hidden');
                     isCountingDown = false; isRunning = true;
                     hud.classList.remove('hidden');
-                    requestAnimationFrame(update);
+                    
+                    // 重複を防ぐため古いフレームIDを破棄して起動
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = requestAnimationFrame(update);
                 }
             }, 1000);
-            requestAnimationFrame(renderWhilePaused);
+            
+            animationFrameId = requestAnimationFrame(renderWhilePaused);
         }
 
         function renderWhilePaused() {
-            if (isRunning) return; draw();
-            if (isCountingDown) requestAnimationFrame(renderWhilePaused);
+            if (isRunning) return; 
+            draw();
+            if (isCountingDown) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = requestAnimationFrame(renderWhilePaused);
+            }
         }
 
         function update() {
-            if (!isRunning) return;
-            if (hitStopTimer > 0) { hitStopTimer--; draw(); requestAnimationFrame(update); return; }
+            if (!isRunning) {
+                updateParticles();
+                draw();
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = requestAnimationFrame(update);
+                return;
+            }
+
+            if (hitStopTimer > 0) { 
+                hitStopTimer--; 
+                draw(); 
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = requestAnimationFrame(update); 
+                return; 
+            }
             gameTime++;
             const elapsedSeconds = gameTime / 60;
             if (elapsedSeconds <= 15) currentScrollSpeed = BASE_SPEED + (elapsedSeconds * (1 / 15));
@@ -464,43 +548,73 @@
             dashStatusUI.className = player.dashCooldown > 0 ? "text-xs font-mono text-slate-500" : "text-xs font-mono text-pink-500 font-bold";
             updateParticles();
             const prevY = player.y;
-            if (player.update()) { endGame(); return; }
+            
+            if (player.update()) { 
+                triggerDeath(); 
+                return; 
+            }
+
             player.onGround = false;
             for (let p of platforms) {
                 p.x -= currentScrollSpeed;
                 p.obstacles.forEach(obs => {
                     if (obs.checkCollision(player, p.x, p.y)) {
                         if (player.dashActive) obs.destroy(p.x, p.y);
-                        else endGame();
+                        else {
+                            triggerDeath(); 
+                        }
                     }
                 });
-                if (isRunning && player.x + player.width > p.x && player.x < p.x + p.width) {
+
+                if (player.alive && isRunning && player.x + player.width > p.x && player.x < p.x + p.width) {
                     if (player.vy >= 0 && prevY + player.height <= p.y + 10 && player.y + player.height >= p.y) {
                         player.y = p.y - player.height; player.vy = 0; player.onGround = true; player.jumpCount = 0;
                     } else if (!player.onGround && player.y + player.height > p.y + 10) { player.x = p.x - player.width; }
                 }
             }
             if (platforms.length > 0 && platforms[0].x + platforms[0].width < -500) { platforms.shift(); generatePlatform(); }
-            draw(); requestAnimationFrame(update);
+            draw(); 
+            
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = requestAnimationFrame(update);
         }
 
         function draw() {
             ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
             ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1;
-            const gridOffset = (isRunning ? gameTime * (currentScrollSpeed * 0.5) : 0) % 50;
+            const gridOffset = (isRunning ? gameTime * (currentScrollSpeed * 0.5) : gameTime * 0) % 50;
             for(let i = -gridOffset; i < CANVAS_WIDTH; i += 50) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, CANVAS_HEIGHT); ctx.stroke(); }
             ctx.strokeStyle = '#334155'; ctx.beginPath(); ctx.moveTo(0, 420); ctx.lineTo(CANVAS_WIDTH, 420); ctx.stroke();
             platforms.forEach(p => p.draw());
             player.draw();
-            if (isRunning) drawEffects();
+            drawEffects();
+        }
+
+        function triggerDeath() {
+            isRunning = false; 
+            bgm.pause();
+            gameOverSe.play().catch(e => console.log("GameOver SE failed", e));
+            
+            player.explode();
+
+            setTimeout(() => {
+                showGameOverUI();
+            }, 250);
+
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = requestAnimationFrame(update);
+        }
+
+        function showGameOverUI() {
+            finalScore.textContent = `Distance: ${score}m`; 
+            gameOverScreen.classList.remove('hidden');
+            setTimeout(() => {
+                gameOverScreen.classList.remove('opacity-0');
+                gameOverScreen.classList.add('opacity-100');
+            }, 10);
         }
 
         function endGame() { 
-            isRunning = false; 
-            finalScore.textContent = `Distance: ${score}m`; 
-            gameOverScreen.classList.remove('hidden'); 
-            bgm.pause();
-            gameOverSe.play().catch(e => console.log("GameOver SE failed", e));
         }
 
         function handleAction(type) {
